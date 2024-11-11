@@ -2,6 +2,7 @@ package com.qrmenu.UserService.domain.service;
 
 
 import com.qrmenu.UserService.config.security.JwtTokenProvider;
+import com.qrmenu.UserService.domain.model.dto.CustomUserDetails;
 import com.qrmenu.UserService.domain.model.dto.UserIdentity;
 import com.qrmenu.UserService.domain.model.entity.User;
 import com.qrmenu.UserService.domain.model.request.LoginRequest;
@@ -14,25 +15,26 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class UserService {
 
     private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final AuthenticationManager authenticationManager;
 
     public UserService(UserRepository userRepository,
-                       PasswordEncoder passwordEncoder,
                        JwtTokenProvider jwtTokenProvider,
                        AuthenticationManager authenticationManager) {
         this.userRepository = userRepository;
-        this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
         this.authenticationManager = authenticationManager;
     }
@@ -41,7 +43,7 @@ public class UserService {
         User user = new User();
         user.setUsername(request.getUsername());
         user.setEmail(request.getEmail());
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
+        user.setPassword(passwordEncoder().encode(request.getPassword()));
         user.setRole(request.getRole());
         userRepository.save(user);
     }
@@ -52,10 +54,18 @@ public class UserService {
                     new UsernamePasswordAuthenticationToken(request.getUsername(), request.getPassword())
             );
 
-            String token = jwtTokenProvider.generateToken(authentication.getName());
+            CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
+            UUID userId = userDetails.getId();
+            String username = userDetails.getUsername();
+            String role = userDetails.getAuthorities().stream()
+                    .findFirst()
+                    .map(GrantedAuthority::getAuthority)
+                    .orElse("");
+
+            String token = jwtTokenProvider.generateToken(userId, username, role);
             return new LoginResponse(token);
         } catch (AuthenticationException e) {
-            throw new RuntimeException("Invalid username or password");
+            throw new RuntimeException("Invalid username or password", e);
         }
     }
 
@@ -66,16 +76,23 @@ public class UserService {
         }
 
         String username = jwtTokenProvider.getUsernameFromToken(jwt);
-        Optional<User> optionalUser =  userRepository.findByUsername(username);
+        String userIdStr = jwtTokenProvider.getUserIdFromToken(jwt);
+        UUID userId = UUID.fromString(userIdStr);
+
+        Optional<User> optionalUser = userRepository.findByUsername(username);
         if (!optionalUser.isPresent()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         User user = optionalUser.get();
         UserIdentity userIdentity = new UserIdentity();
-        userIdentity.setUserId(user.getId());
+        userIdentity.setUserId(userId);
         userIdentity.setUsername(user.getUsername());
         userIdentity.setRole(user.getRole().name());
 
         return ResponseEntity.ok(userIdentity);
+    }
+
+    private PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
     }
 }
